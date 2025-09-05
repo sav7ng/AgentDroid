@@ -105,56 +105,87 @@ async def execute_agent_v4_with_callback(
             await send_callback(callback_url, error_result)
 
 async def send_callback(callback_url: str, result: dict):
-    """Sends a POST callback to the specified URL."""
+    """Sends a POST callback to the specified URL with retry mechanism and exponential backoff."""
+    import time
+    import random
+
     task_id = result.get("task_id", "unknown")
+
+    # Retry configuration (local to function to avoid global constants churn)
+    max_attempts = 5
+    base_delay_seconds = 1.0
+    max_delay_seconds = 30.0
 
     logger.info(f"[Callback] Initiating callback for Task ID: {task_id} to URL: {callback_url}")
     logger.info(f"[Callback] Payload preview - Status: {result.get('status')}, Size: {len(str(result))} chars")
 
-    try:
-        import time
-        start_time = time.time()
+    last_error_message = None
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
-            headers={"Content-Type": "application/json", "User-Agent": "Mobile-Agent-API/1.0"}
-        ) as client:
-            logger.info(f"[Callback] Sending POST request to {callback_url}")
+    for attempt in range(1, max_attempts + 1):
+        try:
+            start_time = time.time()
 
-            response = await client.post(callback_url, json=result)
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                headers={"Content-Type": "application/json", "User-Agent": "Mobile-Agent-API/1.0"}
+            ) as client:
+                logger.info(f"[Callback] Attempt {attempt}/{max_attempts}: Sending POST request to {callback_url}")
 
-            elapsed_time = time.time() - start_time
+                response = await client.post(callback_url, json=result)
 
-            logger.info(f"[Callback] Request completed in {elapsed_time:.2f} seconds")
-            logger.info(f"[Callback] Response Status Code: {response.status_code}")
-            logger.info(f"[Callback] Response Headers: {dict(response.headers)}")
+                elapsed_time = time.time() - start_time
+                logger.info(f"[Callback] Attempt {attempt}: Request completed in {elapsed_time:.2f} seconds")
+                logger.info(f"[Callback] Attempt {attempt}: Response Status Code: {response.status_code}")
+                logger.info(f"[Callback] Attempt {attempt}: Response Headers: {dict(response.headers)}")
 
-            try:
-                response_text = response.text
-                if len(response_text) > 500:
-                    logger.info(f"[Callback] Response Body (truncated): {response_text[:500]}...")
-                else:
-                    logger.info(f"[Callback] Response Body: {response_text}")
-            except Exception as content_error:
-                logger.warning(f"[Callback] Could not read response body: {content_error}")
+                # Log response body (truncate if large)
+                try:
+                    response_text = response.text
+                    if len(response_text) > 500:
+                        logger.info(f"[Callback] Attempt {attempt}: Response Body (truncated): {response_text[:500]}...")
+                    else:
+                        logger.info(f"[Callback] Attempt {attempt}: Response Body: {response_text}")
+                except Exception as content_error:
+                    logger.warning(f"[Callback] Attempt {attempt}: Could not read response body: {content_error}")
 
-            if 200 <= response.status_code < 300:
-                logger.info(f"[Callback] Success - Task ID: {task_id}, URL: {callback_url}, Status Code: {response.status_code}")
-            else:
-                logger.warning(f"[Callback] Non-success status code - Task ID: {task_id}, URL: {callback_url}, Status Code: {response.status_code}")
+                # Success on any 2xx response
+                if 200 <= response.status_code < 300:
+                    logger.info(f"[Callback] Success on attempt {attempt} - Task ID: {task_id}, URL: {callback_url}")
+                    logger.info(f"[Callback] Finished processing callback for Task ID: {task_id}")
+                    return
 
-    except httpx.TimeoutException as timeout_error:
-        logger.error(f"[Callback] Timeout - Task ID: {task_id}, URL: {callback_url}, Error: {timeout_error}")
-    except httpx.ConnectError as connect_error:
-        logger.error(f"[Callback] Connection failed - Task ID: {task_id}, URL: {callback_url}, Error: {connect_error}")
-    except httpx.HTTPStatusError as http_error:
-        logger.error(f"[Callback] HTTP error - Task ID: {task_id}, URL: {callback_url}, Status Code: {http_error.response.status_code}, Error: {http_error}")
-    except Exception as e:
-        logger.error(f"[Callback] Failed to send - Task ID: {task_id}, URL: {callback_url}, Exception Type: {type(e).__name__}, Error: {e}")
-        import traceback
-        logger.debug(f"[Callback] Exception traceback:\n{traceback.format_exc()}")
+                # Non-success status code: prepare to retry if attempts remain
+                last_error_message = f"Non-success status code: {response.status_code}"
+                logger.warning(f"[Callback] Attempt {attempt} failed: {last_error_message}")
 
-    logger.info(f"[Callback] Finished processing callback for Task ID: {task_id}")
+        except httpx.TimeoutException as timeout_error:
+            last_error_message = f"Timeout: {timeout_error}"
+            logger.error(f"[Callback] Attempt {attempt} failed with timeout - Task ID: {task_id}, URL: {callback_url}, Error: {timeout_error}")
+        except httpx.ConnectError as connect_error:
+            last_error_message = f"Connection failed: {connect_error}"
+            logger.error(f"[Callback] Attempt {attempt} failed to connect - Task ID: {task_id}, URL: {callback_url}, Error: {connect_error}")
+        except httpx.HTTPStatusError as http_error:
+            last_error_message = f"HTTP error: {http_error}"
+            status_code = getattr(getattr(http_error, 'response', None), 'status_code', 'unknown')
+            logger.error(f"[Callback] Attempt {attempt} HTTP error - Task ID: {task_id}, URL: {callback_url}, Status Code: {status_code}, Error: {http_error}")
+        except Exception as e:
+            last_error_message = f"Unexpected error: {type(e).__name__}: {e}"
+            logger.error(f"[Callback] Attempt {attempt} failed - Task ID: {task_id}, URL: {callback_url}, Exception Type: {type(e).__name__}, Error: {e}")
+            import traceback
+            logger.debug(f"[Callback] Exception traceback on attempt {attempt}:\n{traceback.format_exc()}")
+
+        # If not returned yet, we will retry if we have remaining attempts
+        if attempt < max_attempts:
+            # Exponential backoff with jitter
+            backoff = min(max_delay_seconds, base_delay_seconds * (2 ** (attempt - 1)))
+            jitter = random.uniform(0, 0.5)
+            delay = backoff + jitter
+            logger.info(f"[Callback] Scheduling retry {attempt + 1} in {delay:.2f} seconds")
+            await asyncio.sleep(delay)
+        else:
+            logger.error(f"[Callback] All {max_attempts} attempts failed for Task ID: {task_id}. Last error: {last_error_message}")
+            logger.info(f"[Callback] Finished processing callback for Task ID: {task_id}")
+            return
 
 app = FastAPI(
     title="Mobile Agent API",

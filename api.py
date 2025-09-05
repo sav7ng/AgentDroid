@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -8,10 +8,14 @@ import uuid
 import logging
 from agent_core import run_mobile_agent
 from agent_core_v4 import run_mobile_agent_v4, run_mobile_agent_v4_async
+from datetime import datetime, timezone
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 简单的内存回调存储（仅用于测试与调试，生产请使用持久化存储）
+CALLBACK_LOGS = []  # list[dict]
 
 # 后台任务处理函数
 async def execute_agent_with_callback(
@@ -127,7 +131,8 @@ async def send_callback(callback_url: str, result: dict):
 
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0, connect=10.0),
-                headers={"Content-Type": "application/json", "User-Agent": "Mobile-Agent-API/1.0"}
+                headers={"Content-Type": "application/json", "User-Agent": "Mobile-Agent-API/1.0"},
+                follow_redirects=True
             ) as client:
                 logger.info(f"[Callback] Attempt {attempt}/{max_attempts}: Sending POST request to {callback_url}")
 
@@ -210,7 +215,7 @@ class AgentV4Request(BaseModel):
     output_path: str = "./agent_outputs"
     callback_url: Optional[str] = None
 
-@app.post("/run-agent/")
+@app.post("/run-agent")
 async def run_agent_endpoint(request: AgentRequest):
     """
     Run the mobile agent with the given instruction.
@@ -237,7 +242,50 @@ async def run_agent_endpoint(request: AgentRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/run-agent-async/")
+# ==============================
+# Callback 测试与查看接口（仅调试）
+# ==============================
+
+@app.post("/callback-test")
+async def callback_test_receiver(request: Request):
+    """测试用回调接收端点：记录并返回接收结果。"""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {"raw": await request.body()}
+
+    record = {
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "headers": dict(request.headers),
+        "payload": payload,
+    }
+    CALLBACK_LOGS.append(record)
+    # 控制内存占用，仅保留最近100条
+    if len(CALLBACK_LOGS) > 100:
+        del CALLBACK_LOGS[:-100]
+
+    logger.info(f"[Callback-Test] Received callback. Total stored: {len(CALLBACK_LOGS)}")
+    return {"status": "ok", "stored": len(CALLBACK_LOGS)}
+
+@app.get("/callback-test")
+async def callback_test_list(limit: int = 20):
+    """获取最近的回调记录。"""
+    limit = max(1, min(100, limit))
+    return {
+        "count": min(limit, len(CALLBACK_LOGS)),
+        "total": len(CALLBACK_LOGS),
+        "items": CALLBACK_LOGS[-limit:],
+    }
+
+@app.delete("/callback-test")
+async def callback_test_clear():
+    """清空回调记录。"""
+    cleared = len(CALLBACK_LOGS)
+    CALLBACK_LOGS.clear()
+    logger.info("[Callback-Test] Cleared callback logs")
+    return {"status": "cleared", "cleared": cleared}
+
+@app.post("/run-agent-async")
 async def run_agent_async_endpoint(request: AgentRequest, background_tasks: BackgroundTasks):
     """
     Run the mobile agent asynchronously with the given instruction. Returns immediately with task_id.
@@ -273,7 +321,7 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
         "callback_url": request.callback_url
     }
 
-@app.post("/run-agent-v4/")
+@app.post("/run-agent-v4")
 async def run_agent_v4_endpoint(request: AgentV4Request):
     """
     Run the mobile agent v4 with the given instruction using the optimized mobile_agent_v4 engine.
@@ -302,7 +350,7 @@ async def run_agent_v4_endpoint(request: AgentV4Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/run-agent-v4-async/")
+@app.post("/run-agent-v4-async")
 async def run_agent_v4_async_endpoint(request: AgentV4Request, background_tasks: BackgroundTasks):
     """
     Run the mobile agent v4 asynchronously with the given instruction. Returns immediately with task_id.

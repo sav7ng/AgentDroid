@@ -1,0 +1,29 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.10.1.1
+    container_name: vllm_server
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - /root/workspace/models/gui-owl-7b:/models/gui-owl-7b
+    environment:
+      - VLLM_LOGGING_LEVEL=DEBUG
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.6,max_split_size_mb:128
+      - VLLM_API_KEY=w6x1nIS9zuDmW8GQnnMTljyoDot4KbG9
+    command: >
+      --model /models/gui-owl-7b
+      --served-model-name gui-owl
+      --trust-remote-code True
+      --dtype float16
+      --max-model-len 16000
+      --tensor-parallel-size 1
+      --gpu-memory-utilization 0.95
+      --allowed-local-media-path /
+      --max-num-seqs 2
+      --port 8000
+      --mm-processor-kwargs '{"min_pixels":3136,"max_pixels":4000000}'
+      --limit-mm-per-prompt '{"image":2}'
+    deploy: {}
+    gpus: all

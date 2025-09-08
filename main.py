@@ -298,6 +298,15 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
     - **model_name**: The name of the model to use.
     - **callback_url**: Optional URL to POST results when task completes.
     """
+    # 指令关键词校验：若不包含“买/下单/购买”等关键词，则直接返回未实现
+    keywords = ["买", "下单", "购买"]
+    instruction_text = (request.instruction or "").strip()
+    if not any(keyword in instruction_text for keyword in keywords):
+        return {
+            "status": "not_supported",
+            "message": "未实现对应功能任务：指令未包含购买/下单相关关键词",
+        }
+
     # 生成唯一任务ID
     task_id = str(uuid.uuid4())
     
@@ -389,5 +398,5 @@ async def run_agent_v4_async_endpoint(request: AgentV4Request, background_tasks:
     }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=9777)
 

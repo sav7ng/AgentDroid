@@ -6,6 +6,7 @@ import asyncio
 import httpx
 import uuid
 import logging
+import threading
 from agent_core import run_mobile_agent
 from agent_core_v4 import run_mobile_agent_v4, run_mobile_agent_v4_async
 from datetime import datetime, timezone
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 # 简单的内存回调存储（仅用于测试与调试，生产请使用持久化存储）
 CALLBACK_LOGS = []  # list[dict]
+
+# 任务执行锁，确保同时只有一个任务执行
+task_execution_lock = threading.Lock()
+is_task_running = False
 
 # 后台任务处理函数
 async def execute_agent_with_callback(
@@ -28,7 +33,11 @@ async def execute_agent_with_callback(
     callback_url: Optional[str] = None
 ):
     """在后台执行agent任务并进行回调"""
+    global is_task_running
+    
     try:
+        # 设置任务执行状态
+        is_task_running = True
         logger.info(f"开始执行任务 {task_id}")
         
         # 在线程池中执行同步的agent函数
@@ -62,6 +71,9 @@ async def execute_agent_with_callback(
         # 即使出错也要回调
         if callback_url:
             await send_callback(callback_url, error_result)
+    finally:
+        # 无论成功还是失败，都要释放任务执行状态
+        is_task_running = False
 
 async def execute_agent_v4_with_callback(
     task_id: str,
@@ -74,7 +86,11 @@ async def execute_agent_v4_with_callback(
     callback_url: Optional[str] = None
 ):
     """在后台执行agent v4任务并进行回调"""
+    global is_task_running
+    
     try:
+        # 设置任务执行状态
+        is_task_running = True
         logger.info(f"开始执行V4任务 {task_id}")
         
         # 使用已有的异步V4函数
@@ -107,6 +123,9 @@ async def execute_agent_v4_with_callback(
         # 即使出错也要回调
         if callback_url:
             await send_callback(callback_url, error_result)
+    finally:
+        # 无论成功还是失败，都要释放任务执行状态
+        is_task_running = False
 
 async def send_callback(callback_url: str, result: dict):
     """Sends a POST callback to the specified URL with retry mechanism and exponential backoff."""
@@ -298,7 +317,16 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
     - **model_name**: The name of the model to use.
     - **callback_url**: Optional URL to POST results when task completes.
     """
-    # 指令关键词校验：若不包含“买/下单/购买”等关键词，则直接返回未实现
+    global is_task_running
+    
+    # 检查是否已有任务在执行
+    if is_task_running:
+        return {
+            "status": "busy",
+            "message": "已有任务在执行，请等待上一个任务执行完成后再请求",
+        }
+    
+    # 指令关键词校验：若不包含"买/下单/购买"等关键词，则直接返回未实现
     keywords = ["买", "下单", "购买"]
     instruction_text = (request.instruction or "").strip()
     if not any(keyword in instruction_text for keyword in keywords):
@@ -373,6 +401,15 @@ async def run_agent_v4_async_endpoint(request: AgentV4Request, background_tasks:
     - **output_path**: The output path for saving agent execution logs and screenshots.
     - **callback_url**: Optional URL to POST results when task completes.
     """
+    global is_task_running
+    
+    # 检查是否已有任务在执行
+    if is_task_running:
+        return {
+            "status": "busy",
+            "message": "已有任务在执行，请等待上一个任务执行完成后再请求",
+        }
+    
     # 生成唯一任务ID
     task_id = str(uuid.uuid4())
     
@@ -399,4 +436,3 @@ async def run_agent_v4_async_endpoint(request: AgentV4Request, background_tasks:
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=9777)
-

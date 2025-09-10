@@ -326,13 +326,13 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
             "message": "已有任务在执行，请等待上一个任务执行完成后再请求",
         }
     
-    # 指令关键词校验：若不包含"买/下单/购买"等关键词，则直接返回未实现
-    keywords = ["买", "下单", "购买"]
+    # 指令关键词校验：若不包含"买/下单/购买/微信"等关键词，则直接返回未实现
+    keywords = ["买", "下单", "购买", "微信"]
     instruction_text = (request.instruction or "").strip()
     if not any(keyword in instruction_text for keyword in keywords):
         return {
             "status": "not_supported",
-            "message": "未实现对应功能任务：指令未包含购买/下单相关关键词",
+            "message": "未实现对应功能任务：指令未包含买/下单/购买/微信相关关键词",
         }
 
     # 生成唯一任务ID

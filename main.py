@@ -50,8 +50,9 @@ async def execute_agent_with_callback(
             model_name=model_name
         )
         
-        # 添加任务ID到结果中
+        # 添加任务ID和原始指令到结果中
         result["task_id"] = task_id
+        result["instruction"] = instruction
         
         logger.info(f"任务 {task_id} 执行完成，状态: {result.get('status')}")
         
@@ -63,6 +64,7 @@ async def execute_agent_with_callback(
         logger.error(f"任务 {task_id} 执行失败: {e}")
         error_result = {
             "task_id": task_id,
+            "instruction": instruction,
             "status": "error",
             "message": str(e),
             "history": []
@@ -103,8 +105,9 @@ async def execute_agent_v4_with_callback(
             output_path=output_path
         )
         
-        # 添加任务ID到结果中
+        # 添加任务ID和原始指令到结果中
         result["task_id"] = task_id
+        result["instruction"] = instruction
         
         logger.info(f"V4任务 {task_id} 执行完成，状态: {result.get('status')}")
         
@@ -116,6 +119,7 @@ async def execute_agent_v4_with_callback(
         logger.error(f"V4任务 {task_id} 执行失败: {e}")
         error_result = {
             "task_id": task_id,
+            "instruction": instruction,
             "status": "error",
             "error": str(e)
         }

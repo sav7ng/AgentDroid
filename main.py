@@ -8,7 +8,6 @@ import uuid
 import logging
 import threading
 from agent_core import run_mobile_agent
-from agent_core_v4 import run_mobile_agent_v4, run_mobile_agent_v4_async
 from datetime import datetime, timezone
 
 # 配置日志
@@ -68,60 +67,6 @@ async def execute_agent_with_callback(
             "status": "error",
             "message": str(e),
             "history": []
-        }
-        
-        # 即使出错也要回调
-        if callback_url:
-            await send_callback(callback_url, error_result)
-    finally:
-        # 无论成功还是失败，都要释放任务执行状态
-        is_task_running = False
-
-async def execute_agent_v4_with_callback(
-    task_id: str,
-    instruction: str,
-    max_steps: int,
-    api_key: str,
-    base_url: str,
-    model_name: str,
-    output_path: str,
-    callback_url: Optional[str] = None
-):
-    """在后台执行agent v4任务并进行回调"""
-    global is_task_running
-    
-    try:
-        # 设置任务执行状态
-        is_task_running = True
-        logger.info(f"开始执行V4任务 {task_id}")
-        
-        # 使用已有的异步V4函数
-        result = await run_mobile_agent_v4_async(
-            instruction=instruction,
-            max_steps=max_steps,
-            api_key=api_key,
-            base_url=base_url,
-            model_name=model_name,
-            output_path=output_path
-        )
-        
-        # 添加任务ID和原始指令到结果中
-        result["task_id"] = task_id
-        result["instruction"] = instruction
-        
-        logger.info(f"V4任务 {task_id} 执行完成，状态: {result.get('status')}")
-        
-        # 如果提供了回调URL，则进行POST回调
-        if callback_url:
-            await send_callback(callback_url, result)
-            
-    except Exception as e:
-        logger.error(f"V4任务 {task_id} 执行失败: {e}")
-        error_result = {
-            "task_id": task_id,
-            "instruction": instruction,
-            "status": "error",
-            "error": str(e)
         }
         
         # 即使出错也要回调
@@ -229,15 +174,6 @@ class AgentRequest(BaseModel):
     model_name: str = "gui-owl"
     callback_url: Optional[str] = None
 
-class AgentV4Request(BaseModel):
-    instruction: str
-    max_steps: int = 50
-    api_key: str
-    base_url: str
-    model_name: str = "gui-owl"
-    output_path: str = "./agent_outputs"
-    callback_url: Optional[str] = None
-
 @app.post("/run-agent")
 async def run_agent_endpoint(request: AgentRequest):
     """
@@ -330,14 +266,14 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
             "message": "已有任务在执行，请等待上一个任务执行完成后再请求",
         }
     
-    # 指令关键词校验：若不包含"小美/微信"等关键词，则直接返回未实现
-    keywords = ["小美", "微信"]
-    instruction_text = (request.instruction or "").strip()
-    if not any(keyword in instruction_text for keyword in keywords):
-        return {
-            "status": "not_supported",
-            "message": "未实现对应功能任务：指令未包含小美/微信相关关键词",
-        }
+    # 指令关键词校验：若不包含等关键词，则直接返回未实现
+    # keywords = ["burger king", "汉堡王", "grab", "alipay", "支付宝", "微信", "wechat", "滴滴", "小美", "Alipay", "Hi Agent", "Hi Agent", "代理", "特工", "Hi", "Hello", "hi", "hello", "你好"]
+    # instruction_text = (request.instruction or "").strip()
+    # if not any(keyword in instruction_text for keyword in keywords):
+    #     return {
+    #         "status": "not_supported",
+    #         "message": "未实现对应功能任务：指令未包含相关关键词",
+    #     }
 
     # 生成唯一任务ID
     task_id = str(uuid.uuid4())
@@ -359,82 +295,6 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
         "task_id": task_id,
         "status": "accepted",
         "message": "任务已接受，正在后台执行",
-        "callback_url": request.callback_url
-    }
-
-@app.post("/run-agent-v4")
-async def run_agent_v4_endpoint(request: AgentV4Request):
-    """
-    Run the mobile agent v4 with the given instruction using the optimized mobile_agent_v4 engine.
-
-    - **instruction**: The user's instruction for the agent.
-    - **max_steps**: The maximum number of steps the agent can take.
-    - **api_key**: The API key for the OpenAI model.
-    - **base_url**: The base URL for the OpenAI API.
-    - **model_name**: The name of the model to use.
-    - **output_path**: The output path for saving agent execution logs and screenshots.
-    """
-    try:
-        result = run_mobile_agent_v4(
-            instruction=request.instruction,
-            max_steps=request.max_steps,
-            api_key=request.api_key,
-            base_url=request.base_url,
-            model_name=request.model_name,
-            output_path=request.output_path
-        )
-        
-        if result.get("status") == "error":
-            raise HTTPException(status_code=500, detail=result.get("error", "Unknown error"))
-
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/run-agent-v4-async")
-async def run_agent_v4_async_endpoint(request: AgentV4Request, background_tasks: BackgroundTasks):
-    """
-    Run the mobile agent v4 asynchronously with the given instruction. Returns immediately with task_id.
-    If callback_url is provided, results will be POST to that URL when complete.
-
-    - **instruction**: The user's instruction for the agent.
-    - **max_steps**: The maximum number of steps the agent can take.
-    - **api_key**: The API key for the OpenAI model.
-    - **base_url**: The base URL for the OpenAI API.
-    - **model_name**: The name of the model to use.
-    - **output_path**: The output path for saving agent execution logs and screenshots.
-    - **callback_url**: Optional URL to POST results when task completes.
-    """
-    global is_task_running
-    
-    # 检查是否已有任务在执行
-    if is_task_running:
-        return {
-            "status": "busy",
-            "message": "已有任务在执行，请等待上一个任务执行完成后再请求",
-        }
-    
-    # 生成唯一任务ID
-    task_id = str(uuid.uuid4())
-    
-    # 添加后台任务
-    background_tasks.add_task(
-        execute_agent_v4_with_callback,
-        task_id=task_id,
-        instruction=request.instruction,
-        max_steps=request.max_steps,
-        api_key=request.api_key,
-        base_url=request.base_url,
-        model_name=request.model_name,
-        output_path=request.output_path,
-        callback_url=request.callback_url
-    )
-    
-    # 立即返回任务ID
-    return {
-        "task_id": task_id,
-        "status": "accepted",
-        "message": "V4任务已接受，正在后台执行",
         "callback_url": request.callback_url
     }
 

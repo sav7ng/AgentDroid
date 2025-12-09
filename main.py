@@ -1,4 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional
 import uvicorn
@@ -6,7 +9,9 @@ import asyncio
 import httpx
 import uuid
 import threading
-from agent_core import run_mobile_agent
+import json
+from agent_core import run_mobile_agent, run_mobile_agent_stream
+from utils.code_generator import CodeGenerator
 from datetime import datetime, timezone
 
 # 导入核心日志和异常处理模块
@@ -235,6 +240,14 @@ app.add_middleware(TraceMiddleware)
 # 配置全局异常处理器
 setup_exception_handlers(app)
 
+# 挂载静态文件目录
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/")
+async def root():
+    """重定向到演示页面"""
+    return RedirectResponse(url="/static/index.html")
+
 class AgentRequest(BaseModel):
     instruction: str
     max_steps: int = 50
@@ -322,6 +335,164 @@ async def callback_test_clear():
     CALLBACK_LOGS.clear()
     logger.info("清空回调测试日志", extra={"cleared_count": cleared})
     return {"status": "cleared", "cleared": cleared}
+
+class StreamAgentRequest(BaseModel):
+    instruction: str
+    max_steps: int = 50
+    api_key: str
+    base_url: str
+    model_name: str = "gui-owl"
+    # 代码生成配置（独立配置）
+    codegen_api_key: Optional[str] = None
+    codegen_base_url: Optional[str] = None
+    codegen_model: str = "gpt-4"
+
+
+@app.get("/screenshot/{task_id}/{step}")
+async def get_screenshot(task_id: str, step: int):
+    """
+    获取指定步骤的截图
+    
+    - **task_id**: 任务ID
+    - **step**: 步骤编号
+    """
+    screenshot_path = Path(f"agent_outputs/task_{task_id}/step_{step}/screenshot.png")
+    
+    if screenshot_path.exists():
+        logger.info(
+            "返回截图文件",
+            extra={"task_id": task_id, "step": step, "path": str(screenshot_path)}
+        )
+        return FileResponse(screenshot_path, media_type="image/png")
+    else:
+        logger.warning(
+            "截图文件不存在",
+            extra={"task_id": task_id, "step": step, "path": str(screenshot_path)}
+        )
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+
+
+@app.post("/run-agent-stream")
+async def run_agent_stream_endpoint(request: StreamAgentRequest):
+    """
+    流式执行 Agent 并生成代码
+    
+    返回 SSE 流，包含：
+    1. Agent 执行过程（思考、动作）
+    2. 代码生成过程（流式输出代码）
+    
+    - **instruction**: 用户指令
+    - **max_steps**: Agent 最大步数
+    - **api_key**: Agent API 密钥
+    - **base_url**: Agent API 基础 URL
+    - **model_name**: Agent 模型名称
+    - **codegen_api_key**: 代码生成 API 密钥（可选，默认使用 api_key）
+    - **codegen_base_url**: 代码生成 API 基础 URL（可选，默认使用 base_url）
+    - **codegen_model**: 代码生成模型名称
+    """
+    
+    logger.info(
+        "接收到流式任务请求",
+        extra={
+            "instruction": request.instruction,
+            "max_steps": request.max_steps,
+            "model_name": request.model_name,
+            "codegen_model": request.codegen_model
+        }
+    )
+    
+    async def event_generator():
+        """SSE 事件生成器"""
+        try:
+            # 阶段 1: 执行 Agent
+            agent_history = []
+            agent_task_id = None
+            agent_status = "error"
+            
+            logger.info("开始执行 Agent 阶段")
+            
+            # 使用 asyncio.to_thread 在线程池中运行 generator
+            for event in run_mobile_agent_stream(
+                instruction=request.instruction,
+                max_steps=request.max_steps,
+                api_key=request.api_key,
+                base_url=request.base_url,
+                model_name=request.model_name
+            ):
+                # 转发 Agent 事件
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                
+                # 提取关键信息
+                if event.get("event_type") == "task_init":
+                    agent_task_id = event.get("task_id")
+                
+                elif event.get("event_type") == "task_completed":
+                    agent_history = event["data"].get("history", [])
+                    agent_status = event["data"].get("status", "unknown")
+                    logger.info(
+                        "Agent 执行完成",
+                        extra={
+                            "task_id": agent_task_id,
+                            "status": agent_status,
+                            "history_length": len(agent_history)
+                        }
+                    )
+            
+            # 阶段 2: 生成代码
+            logger.info("开始代码生成阶段")
+            
+            # 使用独立配置或回退到 Agent 配置
+            codegen_api_key = request.codegen_api_key or request.api_key
+            codegen_base_url = request.codegen_base_url or request.base_url
+            
+            code_generator = CodeGenerator(
+                api_key=codegen_api_key,
+                base_url=codegen_base_url,
+                model=request.codegen_model
+            )
+            
+            # 流式生成代码
+            for event in code_generator.generate_code_stream(
+                history=agent_history,
+                task_id=agent_task_id or "unknown",
+                instruction=request.instruction,
+                status=agent_status
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            
+            # 发送完成信号
+            done_event = {
+                "event_type": "done",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+            
+            logger.info("流式任务完成", extra={"task_id": agent_task_id})
+            
+        except Exception as e:
+            error_msg = f"流式任务执行失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            error_event = {
+                "event_type": "error",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "error_type": "stream",
+                    "message": error_msg
+                }
+            }
+            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 
 @app.post("/run-agent-async")
 async def run_agent_async_endpoint(request: AgentRequest, background_tasks: BackgroundTasks):

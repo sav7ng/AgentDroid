@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile Agent 流式演示</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 Mobile Agent 流式演示</h1>
+            <p>实时查看 Agent 思考过程和代码生成</p>
+        </header>
+
+        <!-- 配置区 -->
+        <section class="config-section">
+            <h2>📝 配置</h2>
+            <div class="form-group">
+                <label>指令:</label>
+                <input type="text" id="instruction" placeholder="例如: 打开设置" value="打开设置">
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>最大步数:</label>
+                    <input type="number" id="maxSteps" value="10" min="1" max="50">
+                </div>
+                <div class="form-group">
+                    <label>Agent 模型:</label>
+                    <input type="text" id="modelName" value="gui-owl">
+                </div>
+                <div class="form-group">
+                    <label>代码生成模型:</label>
+                    <input type="text" id="codegenModel" value="gpt-4">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>API Key:</label>
+                    <input type="password" id="apiKey" placeholder="your-api-key">
+                </div>
+                <div class="form-group">
+                    <label>Base URL:</label>
+                    <input type="text" id="baseUrl" placeholder="http://your-api-url">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>代码生成 API Key: <small>(可选，留空使用上方配置)</small></label>
+                    <input type="password" id="codegenApiKey" placeholder="留空则使用 API Key">
+                </div>
+                <div class="form-group">
+                    <label>代码生成 Base URL: <small>(可选，留空使用上方配置)</small></label>
+                    <input type="text" id="codegenBaseUrl" placeholder="留空则使用 Base URL">
+                </div>
+            </div>
+            <div class="button-group">
+                <button id="startBtn" class="btn btn-primary">▶ 开始执行</button>
+                <button id="stopBtn" class="btn btn-secondary" disabled>⏹ 停止</button>
+                <button id="clearBtn" class="btn btn-secondary">🗑 清空</button>
+            </div>
+        </section>
+
+        <!-- 双栏显示区 -->
+        <div class="content-wrapper">
+            <!-- Agent 执行过程 -->
+            <section class="agent-section">
+                <h2>🤖 Agent 执行过程</h2>
+                <div id="agentLog" class="log-container"></div>
+            </section>
+
+            <!-- 生成的代码 -->
+            <section class="code-section">
+                <h2>📜 生成的 Auto.js 代码</h2>
+                <div class="code-toolbar">
+                    <button id="copyBtn" class="btn btn-small">📋 复制</button>
+                    <button id="downloadBtn" class="btn btn-small">💾 下载</button>
+                </div>
+                <pre id="generatedCode" class="code-container"></pre>
+            </section>
+        </div>
+
+        <!-- 状态栏 -->
+        <footer>
+            <div id="status" class="status-bar">准备就绪</div>
+        </footer>
+    </div>
+
+    <script src="/static/js/stream-client.js"></script>
+</body>
+</html>

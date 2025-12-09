@@ -289,7 +289,8 @@ def run_mobile_agent(instruction, max_steps=50, api_key="", base_url="", model_n
         # 执行动作
         try:
             status = execute_action(device, action_content)
-            history.append(action_content.get('description', str(action_content)))
+            # 保存完整的动作对象到 history（而非仅描述文本）
+            history.append(action_content)
 
             if status != "continue":
                 logger.info("任务完成", extra={"status": status, "total_steps": step + 1})
@@ -471,14 +472,13 @@ def run_mobile_agent_stream(
             # 转换为base64
             screenshot_base64 = pil_to_base64(image)
             
-            # yield 截图事件
+            # yield 截图事件（不包含 base64 数据，避免 SSE 解析错误）
             yield {
                 "event_type": "screenshot",
                 "task_id": task_id,
                 "step": step_num,
                 "timestamp": datetime.now().isoformat(),
                 "data": {
-                    "screenshot_base64": screenshot_base64,
                     "screenshot_path": str(screenshot_path),
                     "width": image.width,
                     "height": image.height
@@ -701,7 +701,8 @@ def run_mobile_agent_stream(
             }
             
             status = execute_action(device, action_content)
-            history.append(action_content.get('description', str(action_content)))
+            # 保存完整的动作对象到 history（而非仅描述文本）
+            history.append(action_content)
             step_data["status"] = status
             
             # yield 动作执行完成事件

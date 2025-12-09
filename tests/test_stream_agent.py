@@ -13,7 +13,7 @@ def test_stream_agent():
     instruction = "打开设置"
     max_steps = 10
     api_key = os.getenv("OPENAI_API_KEY", "w6x1nIS9zuDmW8GQnnMTljyoDot4KbG9")
-    base_url = os.getenv("OPENAI_BASE_URL", "http://8.155.175.106:8000/v1")
+    base_url = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
     model_name = os.getenv("MODEL_NAME", "gui-owl")
     
     print("=" * 80)
@@ -146,7 +146,7 @@ def test_stream_with_web_integration():
     instruction = "打开设置"
     max_steps = 5
     api_key = os.getenv("OPENAI_API_KEY", "w6x1nIS9zuDmW8GQnnMTljyoDot4KbG9")
-    base_url = os.getenv("OPENAI_BASE_URL", "http://8.155.175.106:8000/v1")
+    base_url = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
     model_name = os.getenv("MODEL_NAME", "gui-owl")
     
     try:

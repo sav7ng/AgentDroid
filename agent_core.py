@@ -8,6 +8,9 @@ import adbutils
 import json
 import time
 import os
+import uuid
+from datetime import datetime
+from pathlib import Path
 
 # 导入核心日志和异常模块
 from core.logger import get_logger
@@ -309,3 +312,498 @@ def run_mobile_agent(instruction, max_steps=50, api_key="", base_url="", model_n
     )
     
     return {"status": final_status, "history": history}
+
+
+# -------------------------------
+# 流式输出主循环函数
+# -------------------------------
+def run_mobile_agent_stream(
+    instruction, 
+    max_steps=50, 
+    api_key="", 
+    base_url="", 
+    model_name="gui-owl",
+    output_dir="agent_outputs",
+    task_id=None
+):
+    """
+    运行移动设备 Agent 主循环 (流式输出版本)
+    
+    Args:
+        instruction: 用户指令
+        max_steps: 最大步数
+        api_key: API密钥
+        base_url: API基础URL
+        model_name: 模型名称
+        output_dir: 输出目录
+        task_id: 任务ID (可选,如果不提供则自动生成)
+    
+    Yields:
+        dict: 事件对象,包含以下类型:
+            - step_start: 步骤开始
+            - screenshot: 截图数据
+            - llm_chunk: LLM流式输出片段
+            - llm_complete: LLM响应完成
+            - action_parsed: 动作解析完成
+            - action_executing: 动作执行中
+            - action_completed: 动作执行完成
+            - step_end: 步骤结束
+            - task_completed: 任务完成
+            - error: 错误信息
+    """
+    
+    # 生成任务ID
+    if task_id is None:
+        task_id = str(uuid.uuid4())[:8]
+    
+    # 创建任务输出目录
+    task_dir = Path(output_dir) / f"task_{task_id}"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 记录任务元信息
+    metadata = {
+        "task_id": task_id,
+        "instruction": instruction,
+        "max_steps": max_steps,
+        "model_name": model_name,
+        "start_time": datetime.now().isoformat(),
+        "steps": []
+    }
+    
+    logger.info(
+        "开始运行 Mobile Agent (流式模式)",
+        extra={
+            "task_id": task_id,
+            "instruction": instruction,
+            "max_steps": max_steps,
+            "model_name": model_name,
+            "output_dir": str(task_dir)
+        }
+    )
+    
+    # yield 任务初始化事件
+    yield {
+        "event_type": "task_init",
+        "task_id": task_id,
+        "timestamp": datetime.now().isoformat(),
+        "data": {
+            "instruction": instruction,
+            "max_steps": max_steps,
+            "output_dir": str(task_dir)
+        }
+    }
+    
+    try:
+        # 连接设备
+        device = get_device()
+        
+        yield {
+            "event_type": "device_connected",
+            "task_id": task_id,
+            "timestamp": datetime.now().isoformat(),
+            "data": {
+                "device_model": device.getprop('ro.product.model')
+            }
+        }
+        
+    except DeviceConnectionException as e:
+        error_event = {
+            "event_type": "error",
+            "task_id": task_id,
+            "timestamp": datetime.now().isoformat(),
+            "data": {
+                "error_type": "device_connection",
+                "message": str(e),
+                "details": e.details
+            }
+        }
+        yield error_event
+        return
+
+    bot = OpenAI(api_key=api_key, base_url=base_url)
+    history = []
+    final_status = "max_steps_reached"
+    execution_log = []
+
+    for step in range(max_steps):
+        step_num = step + 1
+        step_start_time = datetime.now()
+        
+        # 创建步骤目录
+        step_dir = task_dir / f"step_{step_num}"
+        step_dir.mkdir(exist_ok=True)
+        
+        step_data = {
+            "step": step_num,
+            "start_time": step_start_time.isoformat(),
+            "screenshot_path": None,
+            "llm_response": None,
+            "action": None,
+            "status": None,
+            "error": None
+        }
+        
+        logger.info(f"执行步骤 {step_num}/{max_steps}")
+        
+        # yield 步骤开始事件
+        yield {
+            "event_type": "step_start",
+            "task_id": task_id,
+            "step": step_num,
+            "timestamp": step_start_time.isoformat(),
+            "data": {
+                "total_steps": max_steps
+            }
+        }
+        
+        if step > 0:
+            time.sleep(2)
+
+        # 截图
+        try:
+            image = capture_screenshot(device)
+            
+            # 保存截图
+            screenshot_path = step_dir / "screenshot.png"
+            image.save(screenshot_path)
+            step_data["screenshot_path"] = str(screenshot_path)
+            
+            # 转换为base64
+            screenshot_base64 = pil_to_base64(image)
+            
+            # yield 截图事件
+            yield {
+                "event_type": "screenshot",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "screenshot_base64": screenshot_base64,
+                    "screenshot_path": str(screenshot_path),
+                    "width": image.width,
+                    "height": image.height
+                }
+            }
+            
+        except ScreenshotException as e:
+            error_event = {
+                "event_type": "error",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "error_type": "screenshot",
+                    "message": str(e),
+                    "details": e.details
+                }
+            }
+            step_data["error"] = str(e)
+            step_data["status"] = "error"
+            yield error_event
+            break
+
+        # 构建消息
+        system_message = build_system_messages(image.width, image.height)
+        final_system_message = {"role": "system", "content": system_message['content']}
+
+        history_text = "\n".join([f"Step {i+1}: {h}" for i, h in enumerate(history)])
+        user_prompt = (
+            f"用户指令: {instruction}\n"
+            f"任务进度:\n{history_text}\n"
+            "请在 <thinking> 标签中说明推理步骤，"
+            "在 <tool_call> 标签中输出动作，"
+            "在 <conclusion> 标签中总结动作。"
+        )
+
+        user_message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}}
+            ]
+        }
+
+        messages = [final_system_message, user_message]
+
+        # 流式调用 LLM API
+        logger.info("调用 LLM API (流式模式)", extra={"model": model_name, "step": step_num})
+        
+        yield {
+            "event_type": "llm_call_start",
+            "task_id": task_id,
+            "step": step_num,
+            "timestamp": datetime.now().isoformat(),
+            "data": {
+                "model": model_name
+            }
+        }
+
+        try:
+            # 流式调用
+            stream = bot.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                stream=True
+            )
+            
+            result_text = ""
+            chunk_count = 0
+            
+            # 逐块处理流式响应
+            for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if hasattr(delta, 'content') and delta.content:
+                        chunk_text = delta.content
+                        result_text += chunk_text
+                        chunk_count += 1
+                        
+                        # yield LLM 流式片段事件
+                        yield {
+                            "event_type": "llm_chunk",
+                            "task_id": task_id,
+                            "step": step_num,
+                            "timestamp": datetime.now().isoformat(),
+                            "data": {
+                                "chunk": chunk_text,
+                                "chunk_index": chunk_count,
+                                "accumulated_length": len(result_text)
+                            }
+                        }
+            
+            # 保存完整LLM响应
+            llm_response_path = step_dir / "llm_response.txt"
+            with open(llm_response_path, 'w', encoding='utf-8') as f:
+                f.write(result_text)
+            step_data["llm_response"] = result_text
+            
+            logger.info(
+                "LLM API 响应完成",
+                extra={"step": step_num, "response_length": len(result_text), "chunks": chunk_count}
+            )
+            
+            # yield LLM 完成事件
+            yield {
+                "event_type": "llm_complete",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "response_length": len(result_text),
+                    "chunks_received": chunk_count,
+                    "response_path": str(llm_response_path)
+                }
+            }
+
+        except Exception as e:
+            error_msg = f"API 调用失败: {type(e).__name__} - {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            error_event = {
+                "event_type": "error",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "error_type": "api_call",
+                    "message": error_msg,
+                    "details": {"step": step_num}
+                }
+            }
+            step_data["error"] = error_msg
+            step_data["status"] = "error"
+            yield error_event
+            break
+
+        # 解析响应
+        try:
+            parsed_tags = parse_tags(result_text, ['thinking', 'tool_call', 'conclusion'])
+            thinking_text = parsed_tags.get('thinking', '')
+            conclusion_text = parsed_tags.get('conclusion', '')
+            tool_call_json = json.loads(parsed_tags.get('tool_call', '{}'))
+            action_content = tool_call_json.get('arguments')
+            
+            if not action_content:
+                logger.warning("未返回动作，停止循环", extra={"step": step_num})
+                final_status = "no_action_returned"
+                step_data["status"] = "no_action"
+                
+                yield {
+                    "event_type": "no_action",
+                    "task_id": task_id,
+                    "step": step_num,
+                    "timestamp": datetime.now().isoformat(),
+                    "data": {
+                        "message": "LLM未返回有效动作"
+                    }
+                }
+                break
+            
+            # 保存动作信息
+            action_path = step_dir / "action.json"
+            with open(action_path, 'w', encoding='utf-8') as f:
+                json.dump({
+                    "thinking": thinking_text,
+                    "action": action_content,
+                    "conclusion": conclusion_text
+                }, f, ensure_ascii=False, indent=2)
+            step_data["action"] = action_content
+            
+            # yield 动作解析完成事件
+            yield {
+                "event_type": "action_parsed",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "action": action_content,
+                    "thinking": thinking_text,
+                    "conclusion": conclusion_text,
+                    "action_path": str(action_path)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(
+                "解析 tool_call 失败",
+                extra={"step": step_num, "error": str(e)},
+                exc_info=True
+            )
+            
+            error_event = {
+                "event_type": "error",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "error_type": "parse_action",
+                    "message": str(e),
+                    "details": {"step": step_num}
+                }
+            }
+            step_data["error"] = str(e)
+            step_data["status"] = "parse_error"
+            yield error_event
+            continue
+
+        # 执行动作
+        try:
+            # yield 动作执行中事件
+            yield {
+                "event_type": "action_executing",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "action": action_content.get('action'),
+                    "description": action_content.get('description', '')
+                }
+            }
+            
+            status = execute_action(device, action_content)
+            history.append(action_content.get('description', str(action_content)))
+            step_data["status"] = status
+            
+            # yield 动作执行完成事件
+            yield {
+                "event_type": "action_completed",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "status": status,
+                    "action": action_content.get('action'),
+                    "description": action_content.get('description', '')
+                }
+            }
+
+            if status != "continue":
+                logger.info("任务完成", extra={"status": status, "total_steps": step_num})
+                final_status = status
+                
+                # yield 步骤结束事件
+                step_data["end_time"] = datetime.now().isoformat()
+                execution_log.append(step_data)
+                
+                yield {
+                    "event_type": "step_end",
+                    "task_id": task_id,
+                    "step": step_num,
+                    "timestamp": datetime.now().isoformat(),
+                    "data": step_data
+                }
+                break
+                
+        except ActionExecutionException as e:
+            # 动作执行失败，但继续下一步
+            logger.warning("动作执行失败，继续下一步", extra={"error": str(e)})
+            step_data["error"] = str(e)
+            step_data["status"] = "action_error"
+            
+            yield {
+                "event_type": "error",
+                "task_id": task_id,
+                "step": step_num,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "error_type": "action_execution",
+                    "message": str(e),
+                    "continue": True
+                }
+            }
+        
+        # yield 步骤结束事件
+        step_data["end_time"] = datetime.now().isoformat()
+        execution_log.append(step_data)
+        
+        yield {
+            "event_type": "step_end",
+            "task_id": task_id,
+            "step": step_num,
+            "timestamp": datetime.now().isoformat(),
+            "data": step_data
+        }
+    
+    if final_status == "max_steps_reached":
+        logger.warning(f"达到最大步数限制 ({max_steps})，任务未完成")
+    
+    # 更新元信息
+    metadata["end_time"] = datetime.now().isoformat()
+    metadata["final_status"] = final_status
+    metadata["total_steps"] = len(execution_log)
+    metadata["steps"] = execution_log
+    
+    # 保存元信息
+    metadata_path = task_dir / "metadata.json"
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+    
+    # 保存完整执行日志
+    log_path = task_dir / "execution_log.json"
+    with open(log_path, 'w', encoding='utf-8') as f:
+        json.dump(execution_log, f, ensure_ascii=False, indent=2)
+    
+    logger.info(
+        "Mobile Agent 运行结束 (流式模式)",
+        extra={
+            "task_id": task_id,
+            "final_status": final_status,
+            "total_steps": len(execution_log),
+            "output_dir": str(task_dir)
+        }
+    )
+    
+    # yield 任务完成事件
+    yield {
+        "event_type": "task_completed",
+        "task_id": task_id,
+        "timestamp": datetime.now().isoformat(),
+        "data": {
+            "status": final_status,
+            "total_steps": len(execution_log),
+            "history": history,
+            "output_dir": str(task_dir),
+            "metadata_path": str(metadata_path),
+            "log_path": str(log_path)
+        }
+    }

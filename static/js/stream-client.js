@@ -30,8 +30,9 @@ class AgentStreamClient {
         this.agentLog = document.getElementById('agentLog');
         this.generatedCodeEl = document.getElementById('generatedCode');
         this.statusBar = document.getElementById('status');
-        this.screenshotImg = document.getElementById('currentScreenshot');
-        this.screenshotContainer = document.getElementById('screenshotContainer');
+        
+        // 创建截图模态框
+        this.createScreenshotModal();
     }
     
     attachEventListeners() {
@@ -148,21 +149,52 @@ class AgentStreamClient {
         this.agentLog.innerHTML = '';
         this.generatedCodeEl.textContent = '';
         this.generatedCode = '';
-        // 清空截图
-        if (this.screenshotImg) {
-            this.screenshotImg.src = '';
-            this.screenshotImg.alt = '当前截图';
-        }
         this.updateStatus('准备就绪', '');
     }
     
-    displayScreenshot(taskId, step) {
-        // 通过 HTTP 请求获取截图
-        if (this.screenshotImg && taskId && step) {
-            const screenshotUrl = `/screenshot/${taskId}/${step}`;
-            this.screenshotImg.src = screenshotUrl;
-            this.screenshotImg.alt = `步骤 ${step} 截图`;
-        }
+    createScreenshotModal() {
+        // 创建截图放大模态框
+        this.modal = document.createElement('div');
+        this.modal.className = 'screenshot-modal';
+        this.modal.innerHTML = '<img src="" alt="放大截图">';
+        document.body.appendChild(this.modal);
+        
+        // 点击模态框关闭
+        this.modal.addEventListener('click', () => {
+            this.modal.classList.remove('active');
+        });
+    }
+    
+    addScreenshotLog(taskId, step) {
+        // 创建包含截图的日志条目
+        const entry = document.createElement('div');
+        entry.className = 'log-entry screenshot';
+        
+        const screenshotUrl = `/screenshot/${taskId}/${step}`;
+        
+        entry.innerHTML = `
+            📸 截图已获取 (步骤 ${step})<br>
+            <img src="${screenshotUrl}" 
+                 alt="步骤 ${step} 截图"
+                 title="点击查看大图">
+        `;
+        
+        // 为图片添加点击事件（放大）
+        const img = entry.querySelector('img');
+        img.addEventListener('click', () => {
+            this.openScreenshotModal(screenshotUrl);
+        });
+        
+        this.agentLog.appendChild(entry);
+        
+        // 自动滚动到底部
+        this.agentLog.scrollTop = this.agentLog.scrollHeight;
+    }
+    
+    openScreenshotModal(imageSrc) {
+        const modalImg = this.modal.querySelector('img');
+        modalImg.src = imageSrc;
+        this.modal.classList.add('active');
     }
     
     handleEvent(event) {
@@ -183,9 +215,8 @@ class AgentStreamClient {
                 break;
                 
             case 'screenshot':
-                this.addLog('📸 截图已获取');
-                // 通过 HTTP 请求获取并显示截图
-                this.displayScreenshot(event.task_id, event.step);
+                // 将截图嵌入到日志流中
+                this.addScreenshotLog(event.task_id, event.step);
                 break;
                 
             case 'llm_chunk':

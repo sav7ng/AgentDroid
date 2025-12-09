@@ -19,7 +19,7 @@ GENERATE_CODE_INTERPRETER = """
 1. 只能输出 Auto.js 代码，不解释、不用 Markdown。
 2. 禁止 async/await/Promise，全部同步执行。
 3. 动作按日志顺序逐条执行。
-4. 每步必须 toastLog，并 sleep(300)。
+4. 每步必须 toastLog，并 sleep(2000)。
 5. 脚本必须以 "auto" 开头。
 6. 必须封装以下方法：
    * safeClick(x,y)
@@ -80,7 +80,7 @@ GENERATE_CODE_INTERPRETER = """
 2. 坐标系以屏幕左上角为原点(0,0)，向右下增加
 3. 时长参数单位统一为毫秒(ms)
 4. 所有操作前需确保无障碍服务已启用
-5. 不要输出```javascript```
+5. 不要开头输出```javascript和结尾输出```内容
 
 【最终要求】
 只输出最终 Auto.js 代码，不要任何多余内容。

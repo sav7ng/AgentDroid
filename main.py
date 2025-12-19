@@ -10,9 +10,11 @@ import httpx
 import uuid
 import threading
 import json
-from agent_core import run_mobile_agent, run_mobile_agent_stream
 from utils.code_generator import CodeGenerator
 from datetime import datetime, timezone
+
+# 导入 Agent 工厂
+from agents.factory import AgentFactory
 
 # 导入核心日志和异常处理模块
 from core.logger import get_logger
@@ -39,7 +41,8 @@ async def execute_agent_with_callback(
     api_key: str,
     base_url: str,
     model_name: str,
-    callback_url: Optional[str] = None
+    callback_url: Optional[str] = None,
+    agent_type: str = "mobile-use-agent"
 ):
     """在后台执行agent任务并进行回调"""
     global is_task_running
@@ -50,17 +53,28 @@ async def execute_agent_with_callback(
         
         # 设置任务执行状态
         is_task_running = True
-        logger.info("开始执行任务", extra={"task_id": task_id, "instruction": instruction})
-        
-        # 在线程池中执行同步的agent函数
-        result = await asyncio.to_thread(
-            run_mobile_agent,
-            instruction=instruction,
-            max_steps=max_steps,
-            api_key=api_key,
-            base_url=base_url,
-            model_name=model_name
+        logger.info(
+            "开始执行任务",
+            extra={
+                "task_id": task_id,
+                "instruction": instruction,
+                "agent_type": agent_type
+            }
         )
+        
+        # 使用 AgentFactory 创建 Agent 实例
+        agent = AgentFactory.create_agent(
+            agent_type=agent_type,
+            config={
+                "api_key": api_key,
+                "base_url": base_url,
+                "model_name": model_name,
+                "max_steps": max_steps
+            }
+        )
+        
+        # 执行任务
+        result = await agent.run(instruction=instruction)
         
         # 添加任务ID和原始指令到结果中
         result["task_id"] = task_id
@@ -70,6 +84,7 @@ async def execute_agent_with_callback(
             "任务执行完成",
             extra={
                 "task_id": task_id,
+                "agent_type": agent_type,
                 "status": result.get('status'),
                 "history_length": len(result.get('history', []))
             }
@@ -82,12 +97,13 @@ async def execute_agent_with_callback(
     except Exception as e:
         logger.error(
             "任务执行失败",
-            extra={"task_id": task_id, "error": str(e)},
+            extra={"task_id": task_id, "agent_type": agent_type, "error": str(e)},
             exc_info=True
         )
         error_result = {
             "task_id": task_id,
             "instruction": instruction,
+            "agent_type": agent_type,
             "status": "error",
             "message": str(e),
             "history": []
@@ -255,6 +271,7 @@ class AgentRequest(BaseModel):
     base_url: str
     model_name: str = "gui-owl"
     callback_url: Optional[str] = None
+    agent_type: str = "mobile-use-agent"  # Agent 类型（默认使用 mobile-use-agent）
 
 @app.post("/run-agent")
 async def run_agent_endpoint(request: AgentRequest):
@@ -266,27 +283,42 @@ async def run_agent_endpoint(request: AgentRequest):
     - **api_key**: The API key for the OpenAI model.
     - **base_url**: The base URL for the OpenAI API.
     - **model_name**: The name of the model to use.
+    - **agent_type**: The type of agent to use (default: "mobile-use-agent").
     """
     logger.info(
         "接收到同步任务请求",
-        extra={"instruction": request.instruction, "max_steps": request.max_steps}
+        extra={
+            "instruction": request.instruction,
+            "max_steps": request.max_steps,
+            "agent_type": request.agent_type
+        }
     )
     
     try:
-        result = run_mobile_agent(
-            instruction=request.instruction,
-            max_steps=request.max_steps,
-            api_key=request.api_key,
-            base_url=request.base_url,
-            model_name=request.model_name
+        # 使用 AgentFactory 创建 Agent 实例
+        agent = AgentFactory.create_agent(
+            agent_type=request.agent_type,
+            config={
+                "api_key": request.api_key,
+                "base_url": request.base_url,
+                "model_name": request.model_name,
+                "max_steps": request.max_steps
+            }
         )
+        
+        # 执行任务
+        result = await agent.run(instruction=request.instruction)
         
         if result.get("status") == "error":
             logger.error("任务执行返回错误", extra={"message": result.get("message")})
             raise HTTPException(status_code=500, detail=result.get("message"))
 
-        logger.info("任务执行成功", extra={"status": result.get("status")})
+        logger.info("任务执行成功", extra={"status": result.get("status"), "agent_type": request.agent_type})
         return result
+    except ValueError as e:
+        # Agent 类型不支持
+        logger.error("不支持的 agent_type", extra={"agent_type": request.agent_type})
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -346,6 +378,7 @@ class StreamAgentRequest(BaseModel):
     codegen_api_key: Optional[str] = None
     codegen_base_url: Optional[str] = None
     codegen_model: str = "gpt-4"
+    agent_type: str = "mobile-use-agent"  # Agent 类型（默认使用 mobile-use-agent）
 
 
 @app.get("/screenshot/{task_id}/{step}")
@@ -397,6 +430,7 @@ async def run_agent_stream_endpoint(request: StreamAgentRequest):
             "instruction": request.instruction,
             "max_steps": request.max_steps,
             "model_name": request.model_name,
+            "agent_type": request.agent_type,
             "codegen_model": request.codegen_model
         }
     )
@@ -409,16 +443,21 @@ async def run_agent_stream_endpoint(request: StreamAgentRequest):
             agent_task_id = None
             agent_status = "error"
             
-            logger.info("开始执行 Agent 阶段")
+            logger.info("开始执行 Agent 阶段", extra={"agent_type": request.agent_type})
             
-            # 使用 asyncio.to_thread 在线程池中运行 generator
-            for event in run_mobile_agent_stream(
-                instruction=request.instruction,
-                max_steps=request.max_steps,
-                api_key=request.api_key,
-                base_url=request.base_url,
-                model_name=request.model_name
-            ):
+            # 使用 AgentFactory 创建 Agent 实例
+            agent = AgentFactory.create_agent(
+                agent_type=request.agent_type,
+                config={
+                    "api_key": request.api_key,
+                    "base_url": request.base_url,
+                    "model_name": request.model_name,
+                    "max_steps": request.max_steps
+                }
+            )
+            
+            # 流式执行 Agent
+            for event in agent.run_stream(instruction=request.instruction):
                 # 转发 Agent 事件
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 
@@ -514,6 +553,7 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
         extra={
             "instruction": request.instruction,
             "max_steps": request.max_steps,
+            "agent_type": request.agent_type,
             "callback_url": request.callback_url
         }
     )
@@ -522,6 +562,13 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
     if is_task_running:
         logger.warning("任务繁忙，已有任务在执行")
         raise TaskBusyException()
+    
+    # 验证 agent_type
+    if not AgentFactory.is_registered(request.agent_type):
+        available_types = AgentFactory.list_agents()
+        error_msg = f"不支持的 agent_type: {request.agent_type}. 可用类型: {available_types}"
+        logger.error(error_msg, extra={"agent_type": request.agent_type})
+        raise HTTPException(status_code=400, detail=error_msg)
     
     # 指令关键词校验：若不包含等关键词，则直接返回未实现
     # keywords = ["burger king", "汉堡王", "grab", "alipay", "支付宝", "微信", "wechat", "滴滴", "小美", "Alipay", "Hi Agent", "Hi Agent", "代理", "特工", "Hi", "Hello", "hi", "hello", "你好"]
@@ -535,7 +582,7 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
     # 生成唯一任务ID
     task_id = str(uuid.uuid4())
     
-    logger.info("任务已接受，准备后台执行", extra={"task_id": task_id})
+    logger.info("任务已接受，准备后台执行", extra={"task_id": task_id, "agent_type": request.agent_type})
     
     # 添加后台任务
     background_tasks.add_task(
@@ -546,13 +593,15 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
         api_key=request.api_key,
         base_url=request.base_url,
         model_name=request.model_name,
-        callback_url=request.callback_url
+        callback_url=request.callback_url,
+        agent_type=request.agent_type
     )
     
     # 立即返回任务ID
     return {
         "task_id": task_id,
         "status": "accepted",
+        "agent_type": request.agent_type,
         "message": "任务已接受，正在后台执行",
         "callback_url": request.callback_url
     }

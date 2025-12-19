@@ -4,7 +4,7 @@
 """
 
 import os
-from agent_core import run_mobile_agent_stream
+from agents.factory import AgentFactory
 
 def test_stream_agent():
     """测试流式 Agent"""
@@ -30,14 +30,20 @@ def test_stream_agent():
     current_step = None
     
     try:
-        for event in run_mobile_agent_stream(
-            instruction=instruction,
-            max_steps=max_steps,
-            api_key=api_key,
-            base_url=base_url,
-            model_name=model_name,
-            output_dir="../agent_outputs"
-        ):
+        # 使用 AgentFactory 创建 Agent 实例
+        agent = AgentFactory.create_agent(
+            agent_type="mobile-use-agent",
+            config={
+                "api_key": api_key,
+                "base_url": base_url,
+                "model_name": model_name,
+                "max_steps": max_steps,
+                "output_dir": "../agent_outputs"
+            }
+        )
+        
+        # 流式执行
+        for event in agent.run_stream(instruction=instruction):
             event_count += 1
             event_type = event.get("event_type")
             step = event.get("step")
@@ -150,13 +156,19 @@ def test_stream_with_web_integration():
     model_name = os.getenv("MODEL_NAME", "gui-owl")
     
     try:
-        for event in run_mobile_agent_stream(
-            instruction=instruction,
-            max_steps=max_steps,
-            api_key=api_key,
-            base_url=base_url,
-            model_name=model_name
-        ):
+        # 使用 AgentFactory 创建 Agent 实例
+        agent = AgentFactory.create_agent(
+            agent_type="mobile-use-agent",
+            config={
+                "api_key": api_key,
+                "base_url": base_url,
+                "model_name": model_name,
+                "max_steps": max_steps
+            }
+        )
+        
+        # 流式执行
+        for event in agent.run_stream(instruction=instruction):
             # 模拟发送到Web前端的JSON格式
             # 在实际应用中,这可以通过 WebSocket 或 SSE 发送
             json_event = json.dumps(event, ensure_ascii=False, indent=2)

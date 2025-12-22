@@ -8,6 +8,7 @@ from typing import Dict, Any, Generator, Optional, Callable
 import asyncio
 import uuid
 import sys
+import traceback
 from pathlib import Path
 from datetime import datetime
 
@@ -92,6 +93,9 @@ class PhoneAgentWrapper:
         self.device_id = device_id
         self.lang = lang
         self.output_dir = kwargs.get('output_dir', 'agent_outputs')
+        
+        # 用于记录每个步骤的动作历史
+        self.actions_history = []
     
     async def run(self, instruction: str, **kwargs) -> Dict[str, Any]:
         """
@@ -105,27 +109,69 @@ class PhoneAgentWrapper:
             执行结果字典，包含：
             - status: 执行状态（success | error）
             - message: 最终消息
-            - history: 执行历史
+            - history: 执行历史（动作列表）
             - agent_type: Agent 类型标识
         """
+        # 重置动作历史
+        self.actions_history = []
+        
         try:
-            # 在线程池中运行 PhoneAgent（避免阻塞事件循环）
-            message = await asyncio.to_thread(
-                self.phone_agent.run,
+            # 重置 Agent 状态
+            self.phone_agent.reset()
+            
+            # 执行首步
+            result = await asyncio.to_thread(
+                self.phone_agent.step,
                 instruction
             )
             
+            # 记录动作
+            if result.action:
+                self.actions_history.append(result.action)
+            
+            # 如果任务完成，直接返回
+            if result.finished:
+                return {
+                    "status": "success" if result.success else "error",
+                    "message": result.message or "Task completed",
+                    "history": self.actions_history,
+                    "agent_type": self.AGENT_TYPE
+                }
+            
+            # 继续执行后续步骤
+            step_count = 2
+            while step_count <= self.max_steps:
+                result = await asyncio.to_thread(
+                    self.phone_agent.step
+                )
+                
+                # 记录动作
+                if result.action:
+                    self.actions_history.append(result.action)
+                
+                if result.finished:
+                    return {
+                        "status": "success" if result.success else "error",
+                        "message": result.message or "Task completed",
+                        "history": self.actions_history,
+                        "agent_type": self.AGENT_TYPE
+                    }
+                
+                step_count += 1
+            
+            # 达到最大步数
             return {
-                "status": "success",
-                "message": message,
-                "history": self._extract_history(self.phone_agent.messages),
+                "status": "error",
+                "message": f"达到最大步数限制 ({self.max_steps})，任务可能未完成",
+                "history": self.actions_history,
                 "agent_type": self.AGENT_TYPE
             }
+            
         except Exception as e:
             return {
                 "status": "error",
                 "message": str(e),
-                "history": [],
+                "history": self.actions_history,
                 "agent_type": self.AGENT_TYPE
             }
     
@@ -145,6 +191,9 @@ class PhoneAgentWrapper:
             - task_error: 任务错误
         """
         task_id = kwargs.get('task_id') or str(uuid.uuid4())[:8]
+        
+        # 重置动作历史
+        self.actions_history = []
         
         # 1. 任务初始化事件
         yield {
@@ -166,6 +215,10 @@ class PhoneAgentWrapper:
         # 3. 执行首步
         try:
             result = self.phone_agent.step(instruction)
+            
+            # 记录动作
+            if result.action:
+                self.actions_history.append(result.action)
             
             yield {
                 "event_type": "step_completed",
@@ -190,7 +243,7 @@ class PhoneAgentWrapper:
                     "agent_type": self.AGENT_TYPE,
                     "data": {
                         "message": result.message,
-                        "history": self._extract_history(self.phone_agent.messages)
+                        "history": self.actions_history
                     }
                 }
                 return
@@ -213,6 +266,10 @@ class PhoneAgentWrapper:
         while step_count <= self.max_steps:
             try:
                 result = self.phone_agent.step()
+                
+                # 记录动作
+                if result.action:
+                    self.actions_history.append(result.action)
                 
                 yield {
                     "event_type": "step_completed",
@@ -237,7 +294,7 @@ class PhoneAgentWrapper:
                         "agent_type": self.AGENT_TYPE,
                         "data": {
                             "message": result.message,
-                            "history": self._extract_history(self.phone_agent.messages)
+                            "history": self.actions_history
                         }
                     }
                     return
@@ -265,7 +322,7 @@ class PhoneAgentWrapper:
             "agent_type": self.AGENT_TYPE,
             "data": {
                 "message": f"达到最大步数限制 ({self.max_steps})，任务可能未完成",
-                "history": self._extract_history(self.phone_agent.messages)
+                "history": self.actions_history
             }
         }
     

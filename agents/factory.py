@@ -155,7 +155,10 @@ class AgentFactory:
 
 # 自动注册内置的 Mobile-Use-Agent
 from agents.mobile_use_agent import MobileUseAgent
-
 AgentFactory.register_agent("mobile-use-agent", MobileUseAgent)
+
+# 自动注册 Phone-Agent
+from agents.phone_agent_wrapper import PhoneAgentWrapper
+AgentFactory.register_agent("phone-agent", PhoneAgentWrapper)
 
 logger.info("Agent 工厂初始化完成", extra={"registered_agents": AgentFactory.list_agents()})

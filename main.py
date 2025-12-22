@@ -69,7 +69,8 @@ async def execute_agent_with_callback(
                 "api_key": api_key,
                 "base_url": base_url,
                 "model_name": model_name,
-                "max_steps": max_steps
+                "max_steps": max_steps,
+                "enable_takeover": False
             }
         )
         
@@ -302,7 +303,8 @@ async def run_agent_endpoint(request: AgentRequest):
                 "api_key": request.api_key,
                 "base_url": request.base_url,
                 "model_name": request.model_name,
-                "max_steps": request.max_steps
+                "max_steps": request.max_steps,
+                "enable_takeover": True
             }
         )
         
@@ -452,7 +454,8 @@ async def run_agent_stream_endpoint(request: StreamAgentRequest):
                     "api_key": request.api_key,
                     "base_url": request.base_url,
                     "model_name": request.model_name,
-                    "max_steps": request.max_steps
+                    "max_steps": request.max_steps,
+                    "enable_takeover": True
                 }
             )
             

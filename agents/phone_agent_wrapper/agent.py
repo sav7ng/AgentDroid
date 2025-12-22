@@ -42,6 +42,7 @@ class PhoneAgentWrapper:
                  verbose: bool = True,
                  confirmation_callback: Optional[Callable[[str], bool]] = None,
                  takeover_callback: Optional[Callable[[str], None]] = None,
+                 enable_takeover: bool = True,
                  **kwargs):
         """
         初始化 PhoneAgent 包装器
@@ -56,6 +57,7 @@ class PhoneAgentWrapper:
             verbose: 是否输出详细日志
             confirmation_callback: 敏感操作确认回调
             takeover_callback: 接管请求回调
+            enable_takeover: 是否启用 Take_over 动作（False 则遇到 Take_over 时直接终止任务）
             **kwargs: 其他配置参数
         """
         
@@ -70,7 +72,8 @@ class PhoneAgentWrapper:
             max_steps=max_steps,
             device_id=device_id,
             lang=lang,
-            verbose=verbose
+            verbose=verbose,
+            enable_takeover=enable_takeover
         )
         
         # 创建 PhoneAgent 实例
@@ -115,8 +118,7 @@ class PhoneAgentWrapper:
             return {
                 "status": "success",
                 "message": message,
-                "history": self._convert_context_to_history(),
-                "step_count": self.phone_agent.step_count,
+                "history": self._extract_history(self.phone_agent.messages),
                 "agent_type": self.AGENT_TYPE
             }
         except Exception as e:
@@ -124,28 +126,23 @@ class PhoneAgentWrapper:
                 "status": "error",
                 "message": str(e),
                 "history": [],
-                "step_count": 0,
                 "agent_type": self.AGENT_TYPE
             }
     
-    def run_stream(self, instruction: str, **kwargs) -> Generator[Dict[str, Any], None, None]:
+    def stream_run(self, instruction: str, **kwargs) -> Generator[Dict[str, Any], None, None]:
         """
-        流式执行任务（模拟流式输出）
-        
-        PhoneAgent 本身不支持流式，这里通过包装 step() 方法模拟流式输出。
+        流式执行任务（适配 MobileUseAgent 接口）
         
         Args:
             instruction: 用户指令
             **kwargs: 覆盖配置参数
             
         Yields:
-            事件字典，包含：
-            - event_type: 事件类型
-            - task_id: 任务 ID
-            - step: 步骤编号
-            - timestamp: 时间戳
-            - agent_type: Agent 类型标识
-            - data: 事件数据
+            执行事件流，包括：
+            - task_init: 任务初始化
+            - step_completed: 步骤完成
+            - task_completed: 任务完成
+            - task_error: 任务错误
         """
         task_id = kwargs.get('task_id') or str(uuid.uuid4())[:8]
         
@@ -192,23 +189,35 @@ class PhoneAgentWrapper:
                     "timestamp": datetime.now().isoformat(),
                     "agent_type": self.AGENT_TYPE,
                     "data": {
-                        "status": "success" if result.success else "error",
-                        "message": result.message or "Task completed",
-                        "total_steps": 1,
-                        "history": self._convert_context_to_history()
+                        "message": result.message,
+                        "history": self._extract_history(self.phone_agent.messages)
                     }
                 }
                 return
+                
+        except Exception as e:
+            yield {
+                "event_type": "task_error",
+                "task_id": task_id,
+                "timestamp": datetime.now().isoformat(),
+                "agent_type": self.AGENT_TYPE,
+                "data": {
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                }
+            }
+            return
             
-            # 4. 继续执行后续步骤
-            step = 2
-            while step <= self.max_steps:
+        # 4. 继续执行后续步骤
+        step_count = 2
+        while step_count <= self.max_steps:
+            try:
                 result = self.phone_agent.step()
                 
                 yield {
                     "event_type": "step_completed",
                     "task_id": task_id,
-                    "step": step,
+                    "step": step_count,
                     "timestamp": datetime.now().isoformat(),
                     "agent_type": self.AGENT_TYPE,
                     "data": {
@@ -221,39 +230,44 @@ class PhoneAgentWrapper:
                 }
                 
                 if result.finished:
-                    break
+                    yield {
+                        "event_type": "task_completed",
+                        "task_id": task_id,
+                        "timestamp": datetime.now().isoformat(),
+                        "agent_type": self.AGENT_TYPE,
+                        "data": {
+                            "message": result.message,
+                            "history": self._extract_history(self.phone_agent.messages)
+                        }
+                    }
+                    return
+                    
+            except Exception as e:
+                yield {
+                    "event_type": "task_error",
+                    "task_id": task_id,
+                    "timestamp": datetime.now().isoformat(),
+                    "agent_type": self.AGENT_TYPE,
+                    "data": {
+                        "error": str(e),
+                        "traceback": traceback.format_exc()
+                    }
+                }
+                return
                 
-                step += 1
+            step_count += 1
             
-            # 5. 任务完成事件
-            final_status = "success" if result.success else "error"
-            if step > self.max_steps and not result.finished:
-                final_status = "max_steps_reached"
-            
-            yield {
-                "event_type": "task_completed",
-                "task_id": task_id,
-                "timestamp": datetime.now().isoformat(),
-                "agent_type": self.AGENT_TYPE,
-                "data": {
-                    "status": final_status,
-                    "message": result.message or "Task completed",
-                    "total_steps": step,
-                    "history": self._convert_context_to_history()
-                }
+        # 5. 达到最大步数仍未完成
+        yield {
+            "event_type": "task_completed",
+            "task_id": task_id,
+            "timestamp": datetime.now().isoformat(),
+            "agent_type": self.AGENT_TYPE,
+            "data": {
+                "message": f"达到最大步数限制 ({self.max_steps})，任务可能未完成",
+                "history": self._extract_history(self.phone_agent.messages)
             }
-            
-        except Exception as e:
-            yield {
-                "event_type": "error",
-                "task_id": task_id,
-                "timestamp": datetime.now().isoformat(),
-                "agent_type": self.AGENT_TYPE,
-                "data": {
-                    "error_type": "execution",
-                    "message": str(e)
-                }
-            }
+        }
     
     def get_agent_info(self) -> Dict[str, Any]:
         """
@@ -265,27 +279,32 @@ class PhoneAgentWrapper:
         return {
             "type": self.AGENT_TYPE,
             "model": self.model_name,
-            "base_url": self.base_url,
             "max_steps": self.max_steps,
             "device_id": self.device_id,
-            "lang": self.lang
+            "lang": self.lang,
+            "output_dir": self.output_dir
         }
     
-    def _convert_context_to_history(self) -> list:
+    def _extract_history(self, messages: list) -> list:
         """
-        将 PhoneAgent 的 context 转换为 history 格式
+        从完整消息历史中提取用户友好的历史记录
         
+        Args:
+            messages: 完整的消息历史
+            
         Returns:
-            简化的历史记录列表
+            用户友好的历史记录列表
         """
-        # PhoneAgent 的 context 是消息列表
-        # 转换为简化的 history 格式
         history = []
-        for msg in self.phone_agent.context:
+        for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
             
-            # 处理不同类型的 content
+            # 只保留用户和助手的消息
+            if role not in ["user", "assistant"]:
+                continue
+                
+            # 处理文本内容
             if isinstance(content, str):
                 history.append({
                     "role": role,
@@ -327,6 +346,7 @@ class PhoneAgentWrapper:
             verbose=config.get('verbose', True),
             confirmation_callback=config.get('confirmation_callback'),
             takeover_callback=config.get('takeover_callback'),
+            enable_takeover=config.get('enable_takeover', True),
             **config.get('extra', {})
         )
     

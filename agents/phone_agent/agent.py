@@ -22,6 +22,7 @@ class AgentConfig:
     lang: str = "cn"
     system_prompt: str | None = None
     verbose: bool = True
+    enable_takeover: bool = True  # Control whether Take_over action is allowed
 
     def __post_init__(self):
         if self.system_prompt is None:
@@ -53,12 +54,12 @@ class PhoneAgent:
         takeover_callback: Optional callback for takeover requests.
 
     Example:
-        >>> from phone_agent import PhoneAgent
-        >>> from phone_agent.model import ModelConfig
-        >>>
-        >>> model_config = ModelConfig(base_url="http://localhost:8000/v1")
-        >>> agent = PhoneAgent(model_config)
-        >>> agent.run("Open WeChat and send a message to John")
+        ">>> from phone_agent import PhoneAgent"
+        ">>> from phone_agent.model import ModelConfig"
+        ">>>"
+        ">>> model_config = ModelConfig(base_url="http://localhost:8000/v1")"
+        ">>> agent = PhoneAgent(model_config)"
+        ">>> agent.run("Open WeChat and send a message to John")"
     """
 
     def __init__(
@@ -76,6 +77,7 @@ class PhoneAgent:
             device_id=self.agent_config.device_id,
             confirmation_callback=confirmation_callback,
             takeover_callback=takeover_callback,
+            enable_takeover=self.agent_config.enable_takeover,
         )
 
         self._context: list[dict[str, Any]] = []

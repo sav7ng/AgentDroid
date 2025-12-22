@@ -37,10 +37,12 @@ class ActionHandler:
         device_id: str | None = None,
         confirmation_callback: Callable[[str], bool] | None = None,
         takeover_callback: Callable[[str], None] | None = None,
+        enable_takeover: bool = True,
     ):
         self.device_id = device_id
         self.confirmation_callback = confirmation_callback or self._default_confirmation
         self.takeover_callback = takeover_callback or self._default_takeover
+        self.enable_takeover = enable_takeover
 
     def execute(
         self, action: dict[str, Any], screen_width: int, screen_height: int
@@ -235,6 +237,16 @@ class ActionHandler:
     def _handle_takeover(self, action: dict, width: int, height: int) -> ActionResult:
         """Handle takeover request (login, captcha, etc.)."""
         message = action.get("message", "User intervention required")
+        
+        # Check if takeover is enabled
+        if not self.enable_takeover:
+            return ActionResult(
+                success=False,
+                should_finish=True,
+                message=f"Take_over action disabled: {message}"
+            )
+        
+        # Original logic: call the takeover callback
         self.takeover_callback(message)
         return ActionResult(True, False)
 

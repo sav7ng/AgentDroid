@@ -26,9 +26,12 @@ FROM python:3.13-slim AS runtime
 # Set the working directory in the container
 WORKDIR /app
 
-# Install only runtime dependencies for OpenCV and health check
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# Configure Debian mirror to use a more stable source and install dependencies
+RUN echo "deb http://mirrors.ustc.edu.cn/debian/ trixie main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+    && echo "deb http://mirrors.ustc.edu.cn/debian/ trixie-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list \
+    && echo "deb http://mirrors.ustc.edu.cn/debian-security trixie-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
        libgl1 \
        libglib2.0-0 \
        libsm6 \
@@ -36,6 +39,8 @@ RUN apt-get update \
        libxrender1 \
        libgomp1 \
        curl \
+       android-tools-adb \
+       iputils-ping \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

@@ -104,7 +104,7 @@ class ScreenshotTimingConfig:
     timeout: float = 30.0  # Timeout in seconds for screenshot operations
     retry_count: int = 3  # Number of retry attempts (total attempts = retry_count)
     retry_delay: float = 2.0  # Delay in seconds between retry attempts
-    pull_timeout: float = 10.0  # Timeout for pulling screenshot file from device
+    pull_timeout: float = 60.0  # Timeout for pulling screenshot file from device
 
     def __post_init__(self):
         """Load values from environment variables if present."""

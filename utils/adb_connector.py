@@ -54,20 +54,53 @@ class AdbConnector(ABC):
 
 
 class LocalAdbConnector(AdbConnector):
-    """本地ADB连接器（默认方式）"""
+    """本地ADB连接器（默认方式）- 仅支持网络设备"""
     
-    def __init__(self, host: str = "127.0.0.1", port: int = 5037):
+    def __init__(self, host: str = "127.0.0.1", port: int = 5037, address: str = None):
+        """
+        初始化本地ADB连接器
+        
+        Args:
+            host: ADB服务器地址（默认 127.0.0.1）
+            port: ADB服务器端口（默认 5037）
+            address: 设备网络地址（IP:端口格式，如 "192.168.1.100:5555"）
+                    为None时自动获取第一台已连接设备
+        """
         self.host = host
         self.port = port
+        self.address = address
         self._device = None
     
     def connect(self) -> adbutils.AdbDevice:
-        """连接本地ADB设备"""
-        logger.info("使用本地ADB连接", extra={"host": self.host, "port": self.port})
+        """
+        连接ADB设备
+        
+        如果未指定 address，则自动获取第一台可用设备
+        """
+        logger.info("使用本地ADB连接", extra={"host": self.host, "port": self.port, "address": self.address})
         adb = adbutils.AdbClient(host=self.host, port=self.port)
-        self._device = adb.device()
-        model = self._device.getprop('ro.product.model')
-        logger.info("成功连接到ADB设备", extra={"device_model": model})
+        
+        if self.address:
+            # 使用指定的网络地址连接
+            self._device = adb.device(self.address)
+            logger.info("连接到指定网络设备", extra={"address": self.address})
+        else:
+            # 自动获取第一台可用设备
+            devices = adb.device_list()
+            if not devices:
+                raise ConnectionError("没有找到已连接的 ADB 设备，请确保设备已连接并启用 USB 调试")
+            
+            # 使用第一台设备
+            self._device = devices[0]
+            logger.info(f"自动获取到 {len(devices)} 台设备，使用第一台", extra={"device_serial": self._device.serial})
+        
+        # 获取设备型号
+        try:
+            model = self._device.getprop('ro.product.model')
+            logger.info("成功连接到ADB设备", extra={"device_model": model, "device_serial": self._device.serial})
+        except Exception as e:
+            logger.warning("获取设备型号失败", extra={"error": str(e)})
+        
         return self._device
     
     def disconnect(self):
@@ -416,7 +449,8 @@ class AdbConnectorFactory:
         if conn_type == "local":
             return LocalAdbConnector(
                 host=params.get("host", "127.0.0.1"),
-                port=params.get("port", 5037)
+                port=params.get("port", 5037),
+                address=params.get("address")
             )
         elif conn_type == "direct":
             return DirectAdbConnector(params)

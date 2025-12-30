@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 import uvicorn
 import asyncio
 import httpx
@@ -42,7 +42,8 @@ async def execute_agent_with_callback(
     base_url: str,
     model_name: str,
     callback_url: Optional[str] = None,
-    agent_type: str = "mobile-use-agent"
+    agent_type: str = "mobile-use-agent",
+    adb_config: Optional[Dict[str, Any]] = None
 ):
     """在后台执行agent任务并进行回调"""
     global is_task_running
@@ -58,7 +59,8 @@ async def execute_agent_with_callback(
             extra={
                 "task_id": task_id,
                 "instruction": instruction,
-                "agent_type": agent_type
+                "agent_type": agent_type,
+                "adb_config_type": adb_config.get("type") if adb_config else "local"
             }
         )
         
@@ -70,7 +72,8 @@ async def execute_agent_with_callback(
                 "base_url": base_url,
                 "model_name": model_name,
                 "max_steps": max_steps,
-                "enable_takeover": False
+                "enable_takeover": False,
+                "adb_config": adb_config
             }
         )
         
@@ -265,6 +268,45 @@ async def root():
     """重定向到演示页面"""
     return RedirectResponse(url="/static/index.html")
 
+class AdbConnectionConfig(BaseModel):
+    """
+    ADB连接配置
+    
+    支持三种连接方式：
+    1. local（默认）：本地ADB连接，无需额外参数
+    2. direct：直连远程ADB（A厂商方式）
+       - params.address: ADB地址，如 "192.168.1.100:5555"
+       - params.key: ADB私钥内容（可选）
+    3. ssh_tunnel：SSH隧道连接（B厂商方式）
+       - params.ssh_command: 完整SSH命令
+       - params.ssh_password: SSH密码
+       - params.adb_address: 本地ADB地址，如 "127.0.0.1:8011"
+    """
+    type: str = "local"
+    params: Dict[str, Any] = {}
+    
+    class Config:
+        json_schema_extra = {
+            "examples": [
+                {
+                    "type": "direct",
+                    "params": {
+                        "address": "192.168.1.100:5555",
+                        "key": "..."
+                    }
+                },
+                {
+                    "type": "ssh_tunnel",
+                    "params": {
+                        "ssh_command": "ssh -oHostKeyAlgorithms=+ssh-rsa user@host -p 17707 -L 8011:remote:5555 -Nf",
+                        "ssh_password": "...",
+                        "adb_address": "127.0.0.1:8011"
+                    }
+                }
+            ]
+        }
+
+
 class AgentRequest(BaseModel):
     instruction: str
     max_steps: int = 50
@@ -273,6 +315,7 @@ class AgentRequest(BaseModel):
     model_name: str = "gui-owl"
     callback_url: Optional[str] = None
     agent_type: str = "mobile-use-agent"  # Agent 类型（默认使用 mobile-use-agent）
+    adb_config: Optional[AdbConnectionConfig] = None  # ADB连接配置（可选，为空时使用本地默认连接）
 
 @app.post("/run-agent")
 async def run_agent_endpoint(request: AgentRequest):
@@ -587,6 +630,14 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
     
     logger.info("任务已接受，准备后台执行", extra={"task_id": task_id, "agent_type": request.agent_type})
     
+    # 转换 adb_config 为字典（如果存在）
+    adb_config_dict = None
+    if request.adb_config:
+        adb_config_dict = {
+            "type": request.adb_config.type,
+            "params": request.adb_config.params
+        }
+    
     # 添加后台任务
     background_tasks.add_task(
         execute_agent_with_callback,
@@ -597,7 +648,8 @@ async def run_agent_async_endpoint(request: AgentRequest, background_tasks: Back
         base_url=request.base_url,
         model_name=request.model_name,
         callback_url=request.callback_url,
-        agent_type=request.agent_type
+        agent_type=request.agent_type,
+        adb_config=adb_config_dict
     )
     
     # 立即返回任务ID

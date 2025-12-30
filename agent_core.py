@@ -2,6 +2,7 @@ from PIL import Image
 from openai import OpenAI
 from utils.common import pil_to_base64, parse_tags
 from utils.mobile_use import MobileUse
+from utils.adb_connector import AdbConnectorFactory, AdbConnector
 from qwen_agent.llm.fncall_prompts.nous_fncall_prompt import Message, ContentItem, NousFnCallPrompt
 from qwen_vl_utils import smart_resize
 import adbutils
@@ -11,6 +12,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, Any, Optional
 
 # 导入核心日志和异常模块
 from core.logger import get_logger
@@ -30,8 +32,34 @@ DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
 # -------------------------------
 # 连接 adb 设备
 # -------------------------------
-def get_device():
-    """连接 ADB 设备"""
+def get_device(adb_config: Optional[Dict[str, Any]] = None) -> tuple:
+    """
+    连接 ADB 设备
+    
+    Args:
+        adb_config: ADB连接配置，格式为 {"type": "...", "params": {...}}
+                   - 为 None 时使用本地默认连接
+                   - type="direct": 直连远程ADB
+                   - type="ssh_tunnel": SSH隧道连接
+    
+    Returns:
+        tuple: (device, connector) - 设备对象和连接器（用于后续清理）
+    """
+    try:
+        # 使用连接器工厂创建连接器
+        connector = AdbConnectorFactory.from_dict(adb_config)
+        
+        # 建立连接
+        device = connector.connect()
+        
+        return device, connector
+    except Exception as e:
+        logger.error("无法连接到 ADB 设备", extra={"error": str(e), "adb_config_type": adb_config.get("type") if adb_config else "local"}, exc_info=True)
+        raise DeviceConnectionException(details={"error": str(e)})
+
+
+def get_device_legacy():
+    """连接 ADB 设备（兼容旧版本，使用本地连接）"""
     try:
         adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
         device = adb.device()
@@ -194,19 +222,37 @@ def execute_action(device, action_content):
 # -------------------------------
 # 主循环函数
 # -------------------------------
-def run_mobile_agent(instruction, max_steps=50, api_key="", base_url="", model_name="gui-owl"):
-    """运行移动设备 Agent 主循环"""
+def run_mobile_agent(
+    instruction, 
+    max_steps=50, 
+    api_key="", 
+    base_url="", 
+    model_name="gui-owl",
+    adb_config: Optional[Dict[str, Any]] = None
+):
+    """
+    运行移动设备 Agent 主循环
+    
+    Args:
+        instruction: 用户指令
+        max_steps: 最大步数
+        api_key: API密钥
+        base_url: API基础URL
+        model_name: 模型名称
+        adb_config: ADB连接配置（可选）
+    """
     logger.info(
         "开始运行 Mobile Agent",
         extra={
             "instruction": instruction,
             "max_steps": max_steps,
-            "model_name": model_name
+            "model_name": model_name,
+            "adb_config_type": adb_config.get("type") if adb_config else "local"
         }
     )
     
     # 连接设备
-    device = get_device()
+    device, connector = get_device(adb_config)
 
     bot = OpenAI(api_key=api_key, base_url=base_url)
     history = []
@@ -304,6 +350,14 @@ def run_mobile_agent(instruction, max_steps=50, api_key="", base_url="", model_n
     if final_status == "max_steps_reached":
         logger.warning(f"达到最大步数限制 ({max_steps})，任务未完成")
     
+    # 清理连接
+    try:
+        if connector:
+            connector.disconnect()
+            logger.info("ADB 连接已清理")
+    except Exception as e:
+        logger.warning("清理 ADB 连接时出错", extra={"error": str(e)})
+    
     logger.info(
         "Mobile Agent 运行结束",
         extra={
@@ -325,7 +379,8 @@ def run_mobile_agent_stream(
     base_url="", 
     model_name="gui-owl",
     output_dir="agent_outputs",
-    task_id=None
+    task_id=None,
+    adb_config: Optional[Dict[str, Any]] = None
 ):
     """
     运行移动设备 Agent 主循环 (流式输出版本)
@@ -338,6 +393,7 @@ def run_mobile_agent_stream(
         model_name: 模型名称
         output_dir: 输出目录
         task_id: 任务ID (可选,如果不提供则自动生成)
+        adb_config: ADB连接配置（可选）
     
     Yields:
         dict: 事件对象,包含以下类型:
@@ -368,7 +424,8 @@ def run_mobile_agent_stream(
         "max_steps": max_steps,
         "model_name": model_name,
         "start_time": datetime.now().isoformat(),
-        "steps": []
+        "steps": [],
+        "adb_config_type": adb_config.get("type") if adb_config else "local"
     }
     
     logger.info(
@@ -378,7 +435,8 @@ def run_mobile_agent_stream(
             "instruction": instruction,
             "max_steps": max_steps,
             "model_name": model_name,
-            "output_dir": str(task_dir)
+            "output_dir": str(task_dir),
+            "adb_config_type": adb_config.get("type") if adb_config else "local"
         }
     )
     
@@ -394,9 +452,10 @@ def run_mobile_agent_stream(
         }
     }
     
+    connector = None
     try:
         # 连接设备
-        device = get_device()
+        device, connector = get_device(adb_config)
         
         yield {
             "event_type": "device_connected",
@@ -783,6 +842,14 @@ def run_mobile_agent_stream(
     log_path = task_dir / "execution_log.json"
     with open(log_path, 'w', encoding='utf-8') as f:
         json.dump(execution_log, f, ensure_ascii=False, indent=2)
+    
+    # 清理连接
+    try:
+        if connector:
+            connector.disconnect()
+            logger.info("ADB 连接已清理 (流式模式)")
+    except Exception as e:
+        logger.warning("清理 ADB 连接时出错 (流式模式)", extra={"error": str(e)})
     
     logger.info(
         "Mobile Agent 运行结束 (流式模式)",
